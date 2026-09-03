@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# Unprivileged wrapper around the root profile renamer.
+
+set -uo pipefail
+
+old=${1:-}
+new=${2:-}
+
+for n in "$old" "$new"; do
+  if [[ ! $n =~ ^[A-Za-z0-9._-]+$ || $n == "." || $n == ".." ]]; then
+    echo "Invalid profile name." >&2
+    exit 2
+  fi
+done
+[[ $old != "$new" ]] || exit 0
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+
+timeout --signal=TERM --kill-after=5s 180s pkexec "$here/ofv-rename-root" "$old" "$new"
+status=$?
+if ((status == 126 || status == 127)); then
+  echo "Authorization was declined." >&2
+  exit 126
+fi
+exit "$status"

@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Root half of dependency installation, reached only through pkexec.
+#
+# The package name is HARDCODED and never read from argv. A pkexec helper that
+# installed a caller-supplied package would be a privilege escalation vector --
+# anyone able to run it could install anything. This can only ever install
+# openfortivpn from the distro repositories.
+
+set -uo pipefail
+
+readonly pkg=openfortivpn
+
+command -v pacman >/dev/null 2>&1 || {
+  echo "This installer supports pacman-based systems only." >&2
+  exit 3
+}
+
+if pacman -Q "$pkg" >/dev/null 2>&1; then
+  echo "$pkg is already installed."
+  exit 0
+fi
+
+# Fail fast with a clear message instead of blocking forever on the db lock.
+if [[ -e /var/lib/pacman/db.lck ]]; then
+  echo "pacman is busy (database is locked). Try again once it finishes." >&2
+  exit 4
+fi
+
+pacman -S --needed --noconfirm -- "$pkg" || {
+  echo "pacman could not install $pkg. Check your network and mirrors." >&2
+  exit 1
+}
+
+pacman -Q "$pkg" >/dev/null 2>&1 || {
+  echo "$pkg did not install." >&2
+  exit 1
+}
+
+# Make the freshly shipped openfortivpn@.service template visible immediately,
+# so connecting works without waiting for anything else to reload systemd.
+systemctl daemon-reload >/dev/null 2>&1
+
+echo "Installed $pkg."

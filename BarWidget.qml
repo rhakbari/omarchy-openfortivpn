@@ -31,6 +31,8 @@ Panel {
 
   property string pendingDeleteName: ""
   property string importName: ""
+  property string renameOldName: ""
+  property string renameName: ""
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -52,23 +54,30 @@ Panel {
   readonly property string iconImport: "󰋺"         // U+F02FA import
   readonly property string iconDelete: "󰆴"         // U+F01B4 delete
   readonly property string iconBoot: "󰚥"           // U+F06A5 power-plug
+  readonly property string iconEdit: "󰏫"           // U+F03EB pencil
+  readonly property string iconInstall: "󰉆"        // U+F0246 tray-arrow-down
 
-  readonly property string barIcon: connectedCount > 0 ? iconConnected
+  readonly property bool setupRequired: service.depsChecked && !service.depsOk
+
+  readonly property string barIcon: setupRequired ? iconFailed
+    : connectedCount > 0 ? iconConnected
     : anyFailed ? iconFailed
     : iconDisconnected
   readonly property color stateColor: connectedCount > 0 ? accent
     : anyFailed ? urgent
     : dim
 
-  readonly property string statusLine: !service.queryAvailable ? "openfortivpn unavailable"
+  readonly property string statusLine: setupRequired ? "Setup required"
+    : !service.queryAvailable ? "openfortivpn unavailable"
     : connectingName !== "" ? "Connecting · " + connectingName
     : connectedCount > 0 ? "Connected · " + activeName
     : anyFailed ? "Last connection failed"
     : profiles.length > 0 ? "Disconnected"
     : "No profiles installed"
 
-  readonly property string tooltip: connectedCount > 0
-    ? "OpenFortiVPN: " + activeName + " connected"
+  readonly property string tooltip: setupRequired
+    ? "OpenFortiVPN: openfortivpn is not installed"
+    : connectedCount > 0 ? "OpenFortiVPN: " + activeName + " connected"
     : profiles.length > 0 ? "OpenFortiVPN: disconnected" : "OpenFortiVPN: no profiles"
 
   function refresh() { service.refresh() }
@@ -95,8 +104,29 @@ Panel {
     service.cancelImport()
     importName = ""
   }
+  function installDeps() { service.installDeps() }
+
+  function requestRename(profile) {
+    cancelImport()
+    cancelDelete()
+    renameOldName = profile.name
+    renameName = profile.name
+    service.setError("")
+    Qt.callLater(function() { renameField.forceActiveFocus(); renameField.selectAll() })
+  }
+  function cancelRename() {
+    renameOldName = ""
+    renameName = ""
+  }
+  function confirmRename() {
+    if (!renameNameValid) return
+    service.renameProfile(bundledPath("ofv-rename"), renameOldName, renameName)
+    cancelRename()
+  }
+
   function requestDelete(profile) {
     cancelImport()
+    cancelRename()
     pendingDeleteName = profile.name
   }
   function cancelDelete() { pendingDeleteName = "" }
@@ -110,6 +140,15 @@ Panel {
   // the same charset the helper scripts validate against.
   readonly property bool importNameValid: /^[A-Za-z0-9._-]+$/.test(importName.trim())
     && importName.trim() !== "." && importName.trim() !== ".."
+
+  // A rename must also not collide with a profile that already exists.
+  readonly property bool renameNameValid: {
+    var n = renameName.trim()
+    if (!/^[A-Za-z0-9._-]+$/.test(n) || n === "." || n === "..") return false
+    if (n === renameOldName) return false
+    for (var i = 0; i < profiles.length; i++) if (profiles[i].name === n) return false
+    return true
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -129,6 +168,8 @@ Panel {
     profileFilter: root.profileFilter
     refreshInterval: root.refreshInterval
     queryHelper: root.bundledPath("ofv-query")
+    depsHelper: root.bundledPath("ofv-deps")
+    onDependenciesInstalled: root.refresh()
     onImportReady: function(path, suggestedName) {
       root.importName = suggestedName
       Qt.callLater(function() { importField.forceActiveFocus(); importField.selectAll() })
@@ -186,6 +227,7 @@ Panel {
       anchors.fill: parent
       // Modal overlays own the keyboard while they are up.
       blocked: service.pendingImportPath !== "" || root.pendingDeleteName !== ""
+        || root.renameOldName !== ""
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -306,9 +348,66 @@ Panel {
             }
           }
 
+          // ------------------------------------------------ setup required
+          //
+          // Omarchy's plugin system has no install hook, so a freshly installed
+          // plugin checks for its own dependency and offers to install it here
+          // rather than failing cryptically at connect time.
+          Rectangle {
+            visible: root.setupRequired
+            width: parent.width
+            implicitHeight: setupColumn.implicitHeight + Style.space(26)
+            radius: Style.cornerRadius > 0 ? Style.space(6) : Style.space(3)
+            color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.06)
+            border.width: 1
+            border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.40)
+
+            Column {
+              id: setupColumn
+              anchors.centerIn: parent
+              width: parent.width - Style.space(28)
+              spacing: Style.space(9)
+
+              Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: "openfortivpn is not installed"
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: service.depsInstallable
+                  ? "This widget drives the openfortivpn package and its systemd unit. Install it to get started."
+                  : "This widget needs the openfortivpn package. Install it with your distribution's package manager."
+                textFormat: Text.PlainText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              OfvActionButton {
+                visible: service.depsInstallable
+                width: parent.width
+                foreground: root.foreground
+                dim: root.dim
+                fontFamily: root.fontFamily
+                iconText: root.iconInstall
+                label: service.depsInstalling ? "Installing…" : "Install openfortivpn"
+                enabled: !service.depsInstalling
+                onActivated: root.installDeps()
+              }
+            }
+          }
+
           // ------------------------------------------------ live tunnel info
           Column {
-            visible: root.connectedCount > 0
+            visible: !root.setupRequired && root.connectedCount > 0
             width: parent.width
             spacing: Style.space(6)
 
@@ -337,14 +436,14 @@ Panel {
 
           // -------------------------------------------------------- profiles
           PanelSectionHeader {
-            visible: root.profiles.length > 0
+            visible: !root.setupRequired && root.profiles.length > 0
             text: "PROFILES"
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
 
           Repeater {
-            model: root.profiles
+            model: root.setupRequired ? [] : root.profiles
 
             delegate: Rectangle {
               id: card
@@ -456,6 +555,15 @@ Panel {
                   Layout.alignment: Qt.AlignVCenter
                   foreground: root.foreground; dim: root.dim; fontFamily: root.fontFamily
                   accentColor: root.accent; urgentColor: root.urgent
+                  label: root.iconEdit
+                  enabled: !service.anyWriteRunning
+                  onActivated: root.requestRename(profile)
+                }
+
+                OfvPill {
+                  Layout.alignment: Qt.AlignVCenter
+                  foreground: root.foreground; dim: root.dim; fontFamily: root.fontFamily
+                  accentColor: root.accent; urgentColor: root.urgent
                   label: root.iconDelete
                   tone: "urgent"
                   enabled: !service.anyWriteRunning
@@ -467,7 +575,7 @@ Panel {
 
           // ----------------------------------------------------- empty state
           Rectangle {
-            visible: root.profiles.length === 0
+            visible: !root.setupRequired && root.profiles.length === 0
             width: parent.width
             implicitHeight: emptyColumn.implicitHeight + Style.space(28)
             radius: Style.cornerRadius > 0 ? Style.space(6) : Style.space(3)
@@ -506,6 +614,7 @@ Panel {
           }
 
           OfvActionButton {
+            visible: !root.setupRequired
             width: parent.width
             foreground: root.foreground
             dim: root.dim
@@ -620,6 +729,117 @@ Panel {
                 filled: true
                 enabled: root.importNameValid && !service.installRunning
                 onActivated: root.confirmImport()
+              }
+            }
+          }
+        }
+      }
+
+      // ------------------------------------------------------ rename overlay
+      Rectangle {
+        visible: root.renameOldName !== ""
+        anchors.fill: parent
+        z: 10
+        color: Qt.rgba(0, 0, 0, 0.62)
+
+        MouseArea { anchors.fill: parent }
+
+        Rectangle {
+          anchors.centerIn: parent
+          width: Math.min(parent.width - Style.space(24), Style.space(340))
+          height: renameColumn.implicitHeight + Style.space(30)
+          radius: Style.cornerRadius > 0 ? Style.space(8) : Style.space(3)
+          color: Color.popups.background
+          border.width: 1
+          border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.22)
+
+          Column {
+            id: renameColumn
+            anchors.centerIn: parent
+            width: parent.width - Style.space(30)
+            spacing: Style.space(11)
+
+            Text {
+              width: parent.width
+              text: "Rename profile"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+            Text {
+              width: parent.width
+              text: "Renames the config to /etc/openfortivpn/"
+                + (root.renameName.trim() || "…") + ".conf. The tunnel is briefly "
+                + "dropped and reconnected if it is up, and a start-at-boot setting "
+                + "is carried over."
+              textFormat: Text.PlainText
+              color: root.dim
+              wrapMode: Text.WordWrap
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            TextField {
+              id: renameField
+              width: parent.width
+              placeholderText: "Profile name"
+              text: root.renameName
+              foreground: root.foreground
+              accent: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              onTextChanged: root.renameName = text
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Escape) { root.cancelRename(); event.accepted = true }
+                else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                  if (root.renameNameValid) root.confirmRename()
+                  event.accepted = true
+                }
+              }
+            }
+
+            Text {
+              visible: root.renameName.trim() !== "" && !root.renameNameValid
+                && root.renameName.trim() !== root.renameOldName
+              width: parent.width
+              text: /^[A-Za-z0-9._-]+$/.test(root.renameName.trim())
+                ? "A profile with that name already exists."
+                : "Use letters, digits, dot, dash or underscore only."
+              color: root.urgent
+              wrapMode: Text.WordWrap
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              visible: root.lastError !== ""
+              width: parent.width
+              text: root.lastError
+              textFormat: Text.PlainText
+              color: root.urgent
+              wrapMode: Text.WordWrap
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Row {
+              anchors.right: parent.right
+              spacing: Style.space(8)
+              OfvPill {
+                foreground: root.foreground; dim: root.dim; fontFamily: root.fontFamily
+                accentColor: root.accent; urgentColor: root.urgent
+                label: "Cancel"
+                onActivated: root.cancelRename()
+              }
+              OfvPill {
+                foreground: root.foreground; dim: root.dim; fontFamily: root.fontFamily
+                accentColor: root.accent; urgentColor: root.urgent
+                label: service.renameRunning ? "Renaming…" : "Rename"
+                tone: "accent"
+                filled: true
+                enabled: root.renameNameValid && !service.anyWriteRunning
+                onActivated: root.confirmRename()
               }
             }
           }

@@ -14,6 +14,18 @@ Item {
   property string profileFilter: ""
   property int refreshInterval: 5000
   property string queryHelper: ""
+  property string depsHelper: ""
+
+  // Dependency state. Optimistic defaults keep the panel from flashing a
+  // "setup required" card during the first check on a healthy system.
+  property bool depsChecked: false
+  property bool hasOpenfortivpn: true
+  property bool hasUnit: true
+  property bool depsInstallable: true
+  property string depsVersion: ""
+  property string depsOutput: ""
+  readonly property bool depsOk: hasOpenfortivpn && hasUnit
+  readonly property bool depsInstalling: depsInstallProcess.running
 
   property var profiles: []
   property var connectionInfo: ({})
@@ -36,7 +48,9 @@ Item {
   readonly property bool pickRunning: pickProcess.running
   readonly property bool installRunning: installProcess.running
   readonly property bool removeRunning: removeProcess.running
-  readonly property bool anyWriteRunning: actionRunning || installRunning || removeRunning
+  readonly property bool renameRunning: renameProcess.running
+  readonly property bool anyWriteRunning: actionRunning || installRunning
+    || removeRunning || renameRunning
 
   readonly property int connectedCount: {
     var n = 0
@@ -57,6 +71,7 @@ Item {
   }
 
   signal importReady(string path, string suggestedName)
+  signal dependenciesInstalled()
 
   function boundedText(value, limit) {
     var s = String(value || "")
@@ -128,6 +143,35 @@ Item {
     }
   }
 
+  function checkDeps() {
+    if (depsHelper === "" || depsCheckProcess.running) return
+    depsOutput = ""
+    depsCheckProcess.command = [depsHelper, "check"]
+    depsCheckProcess.running = true
+  }
+
+  function installDeps() {
+    if (depsHelper === "" || depsInstallProcess.running) return
+    setError("")
+    depsInstallProcess.command = [depsHelper, "install"]
+    depsInstallProcess.running = true
+  }
+
+  function parseDeps(text) {
+    var info = ({})
+    var lines = String(text || "").trim().split(/\r?\n/)
+    for (var i = 0; i < lines.length; i++) {
+      var at = lines[i].indexOf("=")
+      if (at > 0) info[boundedField(lines[i].substring(0, at), 64)] =
+        boundedField(lines[i].substring(at + 1), 128)
+    }
+    hasOpenfortivpn = info["openfortivpn"] === "yes"
+    hasUnit = info["unit"] === "yes"
+    depsInstallable = info["installable"] === "yes"
+    depsVersion = info["version"] || ""
+    depsChecked = true
+  }
+
   function refresh() {
     if (queryHelper === "" || listProcess.running) return
     listOutput = ""
@@ -185,6 +229,15 @@ Item {
     installProcess.running = true
   }
 
+  function renameProfile(renameHelper, oldName, newName) {
+    var clean = String(newName || "").trim()
+    if (oldName === "" || clean === "" || clean === oldName || anyWriteRunning) return
+    busyName = oldName
+    setError("")
+    renameProcess.command = [renameHelper, oldName, clean]
+    renameProcess.running = true
+  }
+
   function removeProfile(removeHelper, name) {
     if (name === "" || anyWriteRunning) return
     busyName = name
@@ -210,6 +263,34 @@ Item {
       listKill.stop()
       service.listExitCode = code
       service.finalizeList()
+    }
+  }
+
+  Process {
+    id: depsCheckProcess
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: service.depsOutput = service.boundedText(text, 8192)
+    }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      if (code === 0) service.parseDeps(service.depsOutput)
+      else service.depsChecked = true
+    }
+  }
+
+  Process {
+    id: depsInstallProcess
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true; onStreamFinished: service.setError(text) }
+    onExited: function(code) {
+      if (code === 0) {
+        service.setError("")
+        service.dependenciesInstalled()
+      }
+      // Re-check either way: a partial success still changes what is present.
+      service.checkDeps()
+      refreshDelay.restart()
     }
   }
 
@@ -263,6 +344,17 @@ Item {
   }
 
   Process {
+    id: renameProcess
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true; onStreamFinished: service.setError(text) }
+    onExited: function(code) {
+      service.busyName = ""
+      if (code === 0) service.setError("")
+      refreshDelay.restart()
+    }
+  }
+
+  Process {
     id: removeProcess
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true; onStreamFinished: service.setError(text) }
@@ -272,6 +364,10 @@ Item {
       refreshDelay.restart()
     }
   }
+
+  // Packages do not appear and disappear on their own, so this runs once at
+  // startup rather than on every poll.
+  Component.onCompleted: checkDeps()
 
   Timer {
     interval: service.refreshInterval

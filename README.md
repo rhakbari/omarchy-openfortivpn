@@ -6,9 +6,9 @@ import new `.conf` files through the desktop file picker.
 
 ![The OpenFortiVPN panel](screenshots/panel.png)
 
-| Bar status | No profiles yet |
-| --- | --- |
-| ![Bar icon](screenshots/bar.png) | ![Empty state](screenshots/empty.png) |
+| Bar status | No profiles yet | First run |
+| --- | --- | --- |
+| ![Bar icon](screenshots/bar.png) | ![Empty state](screenshots/empty.png) | ![Setup](screenshots/setup.png) |
 
 ## Installation
 
@@ -27,10 +27,16 @@ Plugin changes normally hot-reload. If the widget does not appear, run
 `omarchy restart shell`. Later, `omarchy plugin update rhakbari.openfortivpn`
 and `omarchy plugin remove rhakbari.openfortivpn` manage it.
 
+Nothing else to set up: Omarchy's plugin system has no install hook, so the
+widget checks for the `openfortivpn` package itself on first run. If it is
+missing, the panel opens on a **Install openfortivpn** button that installs it
+(one polkit prompt) and then continues as normal.
+
 ## Requirements
 
-- `openfortivpn` (Arch: `extra/openfortivpn`)
 - systemd and a running polkit agent (Omarchy's shell provides one)
+- `openfortivpn` — installed for you from the panel on first run, or by hand
+  with `sudo pacman -S openfortivpn`
 
 ## How it works
 
@@ -113,6 +119,9 @@ Left-click the shield icon in the bar to open the panel.
 - **Connect / Disconnect** — starts or stops the profile's unit.
 - **Plug icon** — toggles "start at boot" (`systemctl enable`/`disable`).
   The row's subtitle tells you the current setting.
+- **Pencil icon** — renames the profile. The config file is moved, a
+  start-at-boot setting is carried across, and a live tunnel is reconnected
+  under the new name rather than silently dropped.
 - **Trash icon** — disconnects, clears the boot setting, and deletes the config.
 - **Import profile** — opens the desktop file picker, checks the file really is
   an openfortivpn config, then lets you name it before installing.
@@ -172,7 +181,12 @@ omarchy bar set rhakbari.openfortivpn refreshIntervalSec 10
 | `ofv-unit` | `systemctl start/stop/enable/disable` |
 | `ofv-pick` | File picker + config sanity check |
 | `ofv-install` → `ofv-install-root` | Import, via `pkexec` |
+| `ofv-rename` → `ofv-rename-root` | Rename, via `pkexec` |
 | `ofv-remove` → `ofv-remove-root` | Delete, via `pkexec` |
+| `ofv-deps` → `ofv-deps-root` | Dependency check and install, via `pkexec` |
+
+`ofv-deps-root` hardcodes the package it installs. A pkexec helper that took a
+caller-supplied package name would let anyone who can run it install anything.
 
 The `*-root` scripts are the security boundary: they re-validate every argument
 rather than trusting the caller, because `pkexec` hands them a caller-controlled
@@ -194,6 +208,20 @@ was not escaped.
 **A unit refuses to start after repeated failures.** `Restart=on-failure` trips
 systemd's start limit. The plugin clears this automatically before connecting;
 by hand it is `systemctl reset-failed "openfortivpn@$(systemd-escape -- <name>).service"`.
+
+## Hacking on it
+
+Saving a file under `~/.config/omarchy/plugins/` reloads the plugin, and that is
+enough for the shell scripts. **Editing the QML is different:** Quickshell caches
+compiled QML, and a hot reload can keep serving the old component — a newly
+added control simply will not appear. Run `omarchy restart shell` after QML
+changes.
+
+Validate the manifest before publishing:
+
+```bash
+omarchy plugin validate .
+```
 
 ## Known limits
 

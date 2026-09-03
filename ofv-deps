@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# Unprivileged wrapper: report dependency state, or install what is missing.
+#
+#   ofv-deps check    -> key=value lines describing what is present
+#   ofv-deps install  -> pkexec the root installer (polkit prompts)
+
+set -uo pipefail
+
+case "${1:-check}" in
+  check)
+    if command -v openfortivpn >/dev/null 2>&1; then
+      printf 'openfortivpn=yes\n'
+      printf 'version=%s\n' "$(openfortivpn --version 2>/dev/null | head -1 | tr -cd 'A-Za-z0-9._-')"
+    else
+      printf 'openfortivpn=no\n'
+    fi
+
+    # The systemd template is what the widget actually drives; the binary alone
+    # is not enough.
+    if systemctl cat 'openfortivpn@.service' >/dev/null 2>&1; then
+      printf 'unit=yes\n'
+    else
+      printf 'unit=no\n'
+    fi
+
+    if command -v pacman >/dev/null 2>&1; then
+      printf 'installable=yes\n'
+    else
+      printf 'installable=no\n'
+    fi
+    ;;
+
+  install)
+    here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+    # 300s: covers the polkit prompt plus a package download on a slow link.
+    timeout --signal=TERM --kill-after=5s 300s pkexec "$here/ofv-deps-root"
+    status=$?
+    if ((status == 126 || status == 127)); then
+      echo "Authorization was declined." >&2
+      exit 126
+    fi
+    exit "$status"
+    ;;
+
+  *)
+    echo "Usage: ofv-deps <check|install>" >&2
+    exit 2
+    ;;
+esac

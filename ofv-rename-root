@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Root half of profile rename, reached only through pkexec. Re-validates both
+# names for the same reason the installer does: pkexec hands it a
+# caller-controlled argv.
+
+set -uo pipefail
+
+readonly conf_dir=/etc/openfortivpn
+
+old=${1:-}
+new=${2:-}
+
+valid_name() {
+  [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != "." && $1 != ".." ]]
+}
+
+valid_name "$old" || { echo "Invalid current profile name." >&2; exit 2; }
+valid_name "$new" || { echo "Invalid new profile name." >&2; exit 2; }
+[[ $old != "$new" ]] || exit 0
+
+src="$conf_dir/${old}.conf"
+dest="$conf_dir/${new}.conf"
+
+[[ -f $src ]] || { echo "No such profile: $old" >&2; exit 2; }
+[[ ! -e $dest ]] || { echo "A profile named '$new' already exists." >&2; exit 2; }
+
+# Instance names are systemd-escaped; see the note in ofv-unit.
+old_esc=$(systemd-escape -- "$old") || exit 1
+new_esc=$(systemd-escape -- "$new") || exit 1
+old_unit="openfortivpn@${old_esc}.service"
+new_unit="openfortivpn@${new_esc}.service"
+
+# Remember what to restore under the new name. The unit is keyed on the config
+# filename, so both the tunnel and the boot link have to be torn down first.
+was_active=no
+was_enabled=no
+[[ $(systemctl is-active "$old_unit" 2>/dev/null) == "active" ]] && was_active=yes
+[[ $(systemctl is-enabled "$old_unit" 2>/dev/null) == "enabled" ]] && was_enabled=yes
+
+systemctl stop "$old_unit" >/dev/null 2>&1
+[[ $was_enabled == yes ]] && systemctl disable "$old_unit" >/dev/null 2>&1
+systemctl reset-failed "$old_unit" >/dev/null 2>&1
+
+mv -n -- "$src" "$dest" || { echo "Could not rename the config file." >&2; exit 1; }
+chown root:root -- "$dest" 2>/dev/null
+chmod 0600 -- "$dest" 2>/dev/null
+
+[[ $was_enabled == yes ]] && systemctl enable "$new_unit" >/dev/null 2>&1
+
+# A rename should not silently drop a live tunnel.
+if [[ $was_active == yes ]]; then
+  if ! systemctl start "$new_unit" >/dev/null 2>&1; then
+    echo "Renamed to '$new', but reconnecting failed. Connect it again from the panel." >&2
+    exit 5
+  fi
+fi
+
+echo "Renamed $old to $new"
