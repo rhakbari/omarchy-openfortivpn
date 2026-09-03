@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Unprivileged wrapper around the root profile remover.
+
+set -uo pipefail
+
+name=${1:-}
+if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || $name == "." || $name == ".." ]]; then
+  echo "Invalid profile name." >&2
+  exit 2
+fi
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+
+timeout --signal=TERM --kill-after=5s 180s pkexec "$here/ofv-remove-root" "$name"
+status=$?
+if ((status == 126 || status == 127)); then
+  echo "Authorization was declined." >&2
+  exit 126
+fi
+exit "$status"

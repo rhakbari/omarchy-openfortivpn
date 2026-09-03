@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# Read-only status queries for the OpenFortiVPN widget. Everything here runs
+# unprivileged: /etc/openfortivpn is world-listable, so profile *names* are
+# readable even though the configs themselves are 0600 root. Nothing here reads
+# a config's contents -- stored credentials never leave root's side.
+
+set -uo pipefail
+
+conf_dir=${OFV_CONF_DIR:-/etc/openfortivpn}
+
+# Profile names are the basenames of /etc/openfortivpn/*.conf, which is what the
+# openfortivpn@.service template expands %I into. openfortivpn's own default
+# config is the extensionless `config` file -- not an instance name, so the
+# *.conf glob correctly skips it.
+list_profile_names() {
+  local path name
+  shopt -s nullglob
+  for path in "$conf_dir"/*.conf; do
+    name=${path##*/}
+    name=${name%.conf}
+    # Matches what the connect/import helpers will accept as an instance name.
+    [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    [[ $name == "." || $name == ".." ]] && continue
+    printf '%s\n' "$name"
+  done
+}
+
+# name <TAB> active-state <TAB> unit-file-state, one profile per line.
+cmd_list() {
+  local -a names=() units=()
+  local name line id cur_id="" cur_active="" cur_enabled=""
+  local -A active=() enabled=()
+
+  while IFS= read -r name; do names+=("$name"); done < <(list_profile_names)
+  ((${#names[@]})) || return 0
+
+  # systemd unescapes the instance name for %I ("-" becomes "/"), and the unit
+  # template reads /etc/openfortivpn/%I.conf. So the instance must be the
+  # escaped form, and Id= comes back escaped too -- keep a map back to the
+  # real profile name.
+  local -A profile_of=()
+  local esc
+  for name in "${names[@]}"; do
+    esc=$(systemd-escape -- "$name") || continue
+    units+=("openfortivpn@${esc}.service")
+    profile_of[$esc]=$name
+  done
+  ((${#units[@]})) || return 0
+
+  # One systemctl call covers every instance. Blocks are separated by a blank
+  # line; buffer each block and flush on the separator so parsing never depends
+  # on the order systemd emits properties in.
+  while IFS= read -r line; do
+    case $line in
+      Id=*)
+        id=${line#Id=}
+        id=${id#openfortivpn@}
+        cur_id=${id%.service}
+        ;;
+      ActiveState=*)   cur_active=${line#ActiveState=} ;;
+      UnitFileState=*) cur_enabled=${line#UnitFileState=} ;;
+      "")
+        if [[ -n $cur_id && -n ${profile_of[$cur_id]:-} ]]; then
+          active[${profile_of[$cur_id]}]=${cur_active:-unknown}
+          enabled[${profile_of[$cur_id]}]=${cur_enabled:-disabled}
+        fi
+        cur_id=""; cur_active=""; cur_enabled=""
+        ;;
+    esac
+  done < <(timeout 4s systemctl show "${units[@]}" -p Id -p ActiveState -p UnitFileState 2>/dev/null)
+
+  # systemctl does not emit a trailing blank line, so flush the last block.
+  if [[ -n $cur_id && -n ${profile_of[$cur_id]:-} ]]; then
+    active[${profile_of[$cur_id]}]=${cur_active:-unknown}
+    enabled[${profile_of[$cur_id]}]=${cur_enabled:-disabled}
+  fi
+
+  for name in "${names[@]}"; do
+    printf '%s\t%s\t%s\n' "$name" "${active[$name]:-unknown}" "${enabled[$name]:-disabled}"
+  done
+}
+
+# key=value lines describing the live tunnel. openfortivpn runs pppd, so the
+# tunnel surfaces as a ppp interface. Unprivileged state gives no way to map a
+# specific interface back to a specific profile, so this reports the first ppp
+# link -- unambiguous in the normal single-tunnel case.
+cmd_details() {
+  local iface addr_line local_ip peer_ip dns
+
+  iface=$(timeout 3s ip -o link show type ppp 2>/dev/null | awk -F': ' 'NR==1 {print $2}' | cut -d'@' -f1)
+  [[ -n $iface ]] || return 0
+  printf 'interface=%s\n' "$iface"
+
+  # `ip -4 -o addr` renders a point-to-point address as "inet LOCAL peer REMOTE/PREFIX".
+  addr_line=$(timeout 3s ip -4 -o addr show dev "$iface" 2>/dev/null | head -1)
+  local_ip=$(awk '{for (i = 1; i < NF; i++) if ($i == "inet") {print $(i + 1); exit}}' <<<"$addr_line")
+  peer_ip=$(awk '{for (i = 1; i < NF; i++) if ($i == "peer") {print $(i + 1); exit}}' <<<"$addr_line")
+  [[ -n $local_ip ]] && printf 'address=%s\n' "${local_ip%%/*}"
+  [[ -n $peer_ip ]] && printf 'gateway=%s\n' "${peer_ip%%/*}"
+
+  if command -v resolvectl >/dev/null 2>&1; then
+    dns=$(timeout 3s resolvectl dns "$iface" 2>/dev/null | sed -n 's/^.*): *//p' | head -1)
+    [[ -n $dns ]] && printf 'dns=%s\n' "$dns"
+  fi
+  return 0
+}
+
+case "${1:-}" in
+  list)    cmd_list ;;
+  details) cmd_details ;;
+  *) echo "Usage: ofv-query <list|details>" >&2; exit 2 ;;
+esac

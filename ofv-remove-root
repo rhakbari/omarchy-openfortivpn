@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Root half of profile removal, reached only through pkexec. Re-validates its
+# argument for the same reason the installer does.
+
+set -uo pipefail
+
+readonly conf_dir=/etc/openfortivpn
+
+name=${1:-}
+if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || $name == "." || $name == ".." ]]; then
+  echo "Invalid profile name." >&2
+  exit 2
+fi
+
+# Instance names are escaped; see the note in ofv-unit.
+esc=$(systemd-escape -- "$name") || exit 1
+unit="openfortivpn@${esc}.service"
+target="$conf_dir/${name}.conf"
+
+if [[ ! -e $target ]]; then
+  echo "No such profile: $name" >&2
+  exit 2
+fi
+
+# Take the tunnel down and clear the boot link before the config disappears,
+# otherwise the unit is left referencing a file that no longer exists.
+systemctl stop "$unit" >/dev/null 2>&1
+systemctl disable "$unit" >/dev/null 2>&1
+systemctl reset-failed "$unit" >/dev/null 2>&1
+
+rm -f -- "$target" || exit 1
+echo "Removed $target"

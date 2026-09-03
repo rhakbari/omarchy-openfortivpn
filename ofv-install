@@ -1,0 +1,30 @@
+#!/bin/bash
+
+# Phase 2 of the import: hand the chosen file to the root installer through
+# pkexec. Omarchy's polkit agent renders the prompt.
+
+set -uo pipefail
+
+src=${1:-}
+name=${2:-}
+
+if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || $name == "." || $name == ".." ]]; then
+  echo "Invalid profile name." >&2
+  exit 2
+fi
+if [[ ! -f $src || ! -r $src ]]; then
+  echo "That file cannot be read." >&2
+  exit 2
+fi
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+
+# 180s covers the polkit prompt; pkexec exits 126/127 when the dialog is
+# dismissed or authorization is declined, which is a cancel, not a failure.
+timeout --signal=TERM --kill-after=5s 180s pkexec "$here/ofv-install-root" "$src" "$name"
+status=$?
+if ((status == 126 || status == 127)); then
+  echo "Authorization was declined." >&2
+  exit 126
+fi
+exit "$status"

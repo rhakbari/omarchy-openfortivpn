@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Root half of the import, reached only through pkexec. This script is the
+# security boundary: every argument is re-validated here rather than trusted
+# from the caller, because pkexec hands it a caller-controlled argv.
+
+set -uo pipefail
+
+readonly conf_dir=/etc/openfortivpn
+readonly max_bytes=1048576
+
+src=${1:-}
+name=${2:-}
+
+# Re-validate rather than trusting the unprivileged caller. Rejecting slashes,
+# "." and ".." is what keeps $dest inside $conf_dir.
+if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || $name == "." || $name == ".." ]]; then
+  echo "Invalid profile name." >&2
+  exit 2
+fi
+
+if [[ ! -f $src || ! -r $src ]]; then
+  echo "Source file is not readable." >&2
+  exit 2
+fi
+
+size=$(stat -c %s -- "$src" 2>/dev/null || echo 0)
+if ((size > max_bytes)); then
+  echo "Source file is too large." >&2
+  exit 2
+fi
+
+if ! grep -qiE '^[[:space:]]*host[[:space:]]*=' -- "$src"; then
+  echo "Source file is not an openfortivpn config." >&2
+  exit 3
+fi
+
+dest="$conf_dir/${name}.conf"
+mkdir -p -- "$conf_dir" || exit 1
+chmod 0755 -- "$conf_dir" 2>/dev/null
+
+# Stage next to the destination and rename, so a reader never sees a partial
+# config and the file is never briefly world-readable. install(1) sets the
+# final owner and mode in one step.
+tmp=$(mktemp -- "$conf_dir/.import.XXXXXX") || exit 1
+trap 'rm -f -- "$tmp"' EXIT
+chmod 0600 -- "$tmp"
+
+cat -- "$src" >"$tmp" || exit 1
+chown root:root -- "$tmp" || exit 1
+mv -f -- "$tmp" "$dest" || exit 1
+trap - EXIT
+
+# Credentials live in this file, so it stays root-only.
+chmod 0600 -- "$dest"
+echo "Installed $dest"

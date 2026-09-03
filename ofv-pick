@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Phase 1 of the import flow: choose a file and propose a profile name.
+# Runs entirely unprivileged. Prints "<path>\t<suggested-name>" on success so
+# the panel can show a name field pre-filled before anything touches /etc.
+
+set -uo pipefail
+
+readonly max_bytes=1048576
+
+path=$(omarchy file select --title "Import openfortivpn profile" --extensions "conf cfg txt" 2>/dev/null)
+# Empty means the picker was dismissed -- a cancel, not an error worth showing.
+[[ -n $path ]] || exit 1
+
+if [[ ! -f $path || ! -r $path ]]; then
+  echo "That file cannot be read." >&2
+  exit 2
+fi
+
+size=$(stat -c %s -- "$path" 2>/dev/null || echo 0)
+if ((size > max_bytes)); then
+  echo "That file is too large to be an openfortivpn profile." >&2
+  exit 2
+fi
+
+# openfortivpn configs are key = value lines; `host` is the one required key.
+if ! grep -qiE '^[[:space:]]*host[[:space:]]*=' -- "$path"; then
+  echo "No 'host =' line found -- this does not look like an openfortivpn config." >&2
+  exit 3
+fi
+
+# Propose the filename, minus extension, reduced to a valid systemd instance
+# name. The panel lets the user edit this before installing.
+suggested=${path##*/}
+suggested=${suggested%.*}
+suggested=$(printf '%s' "$suggested" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//')
+[[ -n $suggested ]] || suggested="profile"
+
+printf '%s\t%s\n' "$path" "$suggested"

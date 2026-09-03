@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# Start/stop an openfortivpn tunnel, or toggle whether it comes up at boot.
+#
+# These are plain `systemctl` calls against the packaged openfortivpn@.service
+# template. systemd hands the authorization decision to polkit, and Omarchy's
+# shell already runs a polkit agent, so the user gets a graphical password
+# prompt. Nothing here is setuid and no polkit rule is installed -- revoking
+# access is just a matter of not typing the password.
+
+set -uo pipefail
+
+action=${1:-}
+name=${2:-}
+
+# Same charset the query helper lists, and the one systemd instance names can
+# carry unescaped. Rejecting "." / ".." and slashes keeps a crafted profile name
+# from escaping /etc/openfortivpn.
+if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || $name == "." || $name == ".." ]]; then
+  echo "Invalid profile name." >&2
+  exit 2
+fi
+
+# systemd unescapes the instance name for %I, turning "-" into "/". The unit
+# template is `openfortivpn -c /etc/openfortivpn/%I.conf`, so the instance has to
+# be the *escaped* form for %I to unescape back to the real filename:
+# profile "work-vpn" -> instance "work\x2dvpn" -> %I "work-vpn".
+esc=$(systemd-escape -- "$name") || exit 1
+unit="openfortivpn@${esc}.service"
+
+case $action in
+  start)
+    # A unit left in `failed`, or rate-limited by Restart=on-failure, refuses to
+    # start until it is reset. Check first (unprivileged) so the common case
+    # does not spend a second authorization on a no-op.
+    if [[ $(systemctl is-failed "$unit" 2>/dev/null) == "failed" ]]; then
+      systemctl reset-failed "$unit" >/dev/null 2>&1
+    fi
+    # Generous ceiling: this window has to cover the polkit prompt (the user
+    # typing a password) plus the SSL handshake and pppd negotiation.
+    timeout --signal=TERM --kill-after=5s 180s systemctl start "$unit"
+    status=$?
+    if ((status == 124)); then
+      echo "Timed out bringing up ${name}." >&2
+      exit 124
+    fi
+    if ((status != 0)); then
+      # The unit's own journal explains the failure far better than systemctl's
+      # exit code does; surface the last few lines to the panel.
+      journalctl -u "$unit" -n 6 --no-pager --output=cat 2>/dev/null | tail -6 >&2
+      exit "$status"
+    fi
+    ;;
+  stop)
+    timeout --signal=TERM --kill-after=5s 60s systemctl stop "$unit"
+    status=$?
+    # A tunnel that dropped on its own leaves the unit in `failed`, which keeps
+    # showing up as an error until it is cleared.
+    systemctl reset-failed "$unit" >/dev/null 2>&1
+    ((status == 0)) || exit "$status"
+    ;;
+  enable|disable)
+    timeout --signal=TERM --kill-after=5s 60s systemctl "$action" "$unit"
+    status=$?
+    ((status == 0)) || exit "$status"
+    ;;
+  *)
+    echo "Usage: ofv-unit <start|stop|enable|disable> <profile>" >&2
+    exit 2
+    ;;
+esac
+exit 0
