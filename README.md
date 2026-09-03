@@ -179,6 +179,63 @@ omarchy bar set rhakbari.openfortivpn showLabel true
 omarchy bar set rhakbari.openfortivpn refreshIntervalSec 10
 ```
 
+## Uninstalling
+
+**Do this from the panel first, while the widget is still installed.** Once it is
+gone there is no UI left for these, and a profile set to start at boot will keep
+reconnecting on every reboot:
+
+1. **Disconnect** anything that is connected.
+2. Turn off the **plug icon** on every profile, so nothing starts at boot.
+3. **Delete** any profiles you no longer want (the trash icon also stops and
+   disables the unit for you).
+
+Then remove the widget:
+
+```bash
+omarchy plugin remove rhakbari.openfortivpn
+```
+
+That takes it off the bar and unloads it. What happens to the folder depends on
+how it was installed: a plugin added from git is deleted outright, while a
+hand-copied folder is moved to a timestamped backup inside
+`~/.config/omarchy/plugins/`.
+
+### What removal does not touch
+
+`omarchy plugin remove` only deals with the plugin folder. Everything the widget
+put on the system stays until you remove it yourself:
+
+```bash
+# 1. Any profiles still in place (each holds a VPN password)
+sudo systemctl disable --now "openfortivpn@$(systemd-escape -- <name>)"
+sudo rm /etc/openfortivpn/<name>.conf
+
+# 2. The optional passwordless-connect polkit rule, if you installed it
+sudo rm -f /etc/polkit-1/rules.d/49-openfortivpn.rules
+
+# 3. The backend package, if nothing else uses it
+sudo pacman -Rns openfortivpn
+```
+
+Check nothing is left running or enabled:
+
+```bash
+systemctl list-units --all 'openfortivpn@*'
+ls /etc/openfortivpn/
+```
+
+A note on what `pacman -Rns` leaves behind. Your imported profiles are not
+package-owned files, so pacman will not touch them — and because the directory
+is not empty, `/etc/openfortivpn/` survives too. The `config` file that ships
+with the package is registered as a pacman backup file, so if you ever edited it
+you will be left with `/etc/openfortivpn/config.pacsave`. Remove profiles first
+(step 1 above) if you want the directory gone, then delete whatever remains:
+
+```bash
+sudo rm -rf /etc/openfortivpn
+```
+
 ## Files
 
 | File | Role |
