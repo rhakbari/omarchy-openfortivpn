@@ -1,18 +1,20 @@
 {
   "schemaVersion": 1,
   "id": "rhakbari.openfortivpn",
-  "name": "OpenFortiVPN",
+  "name": "FortiVPN",
   "version": "1.0.0",
   "author": "Raza Akbari",
   "license": "MIT",
-  "description": "Connect, disconnect, and import openfortivpn (FortiGate SSL VPN) profiles from the Omarchy bar.",
-  "kinds": ["bar-widget"],
+  "description": "FortiVPN (Fortinet SSL VPN) client for the Omarchy bar. Connect, disconnect, rename and import profiles; openfortivpn does the tunnelling.",
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "OpenFortiVPN",
-    "description": "Browse, connect, disconnect, import, and remove openfortivpn profiles.",
+    "displayName": "FortiVPN",
+    "description": "Browse, connect, disconnect, rename, import and remove FortiVPN profiles.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -26,7 +28,7 @@
         "key": "profile",
         "type": "string",
         "label": "Profile filter",
-        "description": "Show only this profile. Leave empty to list every profile in /etc/openfortivpn.",
+        "description": "Show only this profile. Leave empty to list every FortiVPN profile in /etc/openfortivpn.",
         "defaultValue": ""
       },
       {

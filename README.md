@@ -1,14 +1,22 @@
-# OpenFortiVPN for Omarchy
+# FortiVPN for Omarchy
 
-An Omarchy Shell (Quickshell) bar widget for managing **openfortivpn** FortiGate
-SSL VPN profiles: connect, disconnect, set which profiles come up at boot, and
-import new `.conf` files through the desktop file picker.
+A **FortiVPN** client that lives in your Omarchy bar. Connect to your company's
+Fortinet SSL VPN, switch between profiles, pick which ones come up at boot, and
+import the `.conf` your admin sent you — without opening a terminal.
 
-![The OpenFortiVPN panel](screenshots/panel.png)
+![The FortiVPN panel](screenshots/panel.png)
 
-| Bar status | No profiles yet | First run |
-| --- | --- | --- |
-| ![Bar icon](screenshots/bar.png) | ![Empty state](screenshots/empty.png) | ![Setup](screenshots/setup.png) |
+Under the hood it drives [openfortivpn](https://github.com/adrienverge/openfortivpn),
+the open-source FortiGate SSL VPN client, through systemd. That is where the
+package name, config paths and unit names throughout this README come from — you
+do not have to touch any of them, and the widget installs openfortivpn for you
+on first run.
+
+> **Unofficial.** Not affiliated with, authorised by, or endorsed by Fortinet.
+> "FortiVPN", "FortiGate" and "FortiClient" are trademarks of Fortinet, Inc.
+> This project just automates the open-source `openfortivpn` client.
+
+![The widget in the bar](screenshots/bar.png)
 
 ## Installation
 
@@ -28,7 +36,7 @@ Plugin changes normally hot-reload. If the widget does not appear, run
 and `omarchy plugin remove rhakbari.openfortivpn` manage it.
 
 Nothing else to set up: Omarchy's plugin system has no install hook, so the
-widget checks for the `openfortivpn` package itself on first run. If it is
+widget checks for its `openfortivpn` backend itself on first run. If it is
 missing, the panel opens on a **Install openfortivpn** button that installs it
 (one polkit prompt) and then continues as normal.
 
@@ -137,7 +145,8 @@ Keyboard, while the panel has focus:
 
 ## Profile format
 
-A minimal `/etc/openfortivpn/<name>.conf`:
+Profiles use openfortivpn's own config format, so a file your admin hands you for
+the command-line client works unchanged. A minimal `/etc/openfortivpn/<name>.conf`:
 
 ```ini
 host = vpn.example.com

@@ -7,7 +7,11 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// OpenFortiVPN bar widget.
+// FortiVPN bar widget.
+//
+// Presented as "FortiVPN" because that is what people are connecting to; the
+// tunnelling is done by the openfortivpn package, which is what the paths, unit
+// names and the dependency installer all refer to. Unaffiliated with Fortinet.
 //
 // Profiles are the *.conf files in /etc/openfortivpn; each one is an instance of
 // the packaged openfortivpn@.service template. Connecting is therefore just
@@ -76,9 +80,9 @@ Panel {
     : "No profiles installed"
 
   readonly property string tooltip: setupRequired
-    ? "OpenFortiVPN: openfortivpn is not installed"
-    : connectedCount > 0 ? "OpenFortiVPN: " + activeName + " connected"
-    : profiles.length > 0 ? "OpenFortiVPN: disconnected" : "OpenFortiVPN: no profiles"
+    ? "FortiVPN: backend not installed"
+    : connectedCount > 0 ? "FortiVPN: " + activeName + " connected"
+    : profiles.length > 0 ? "FortiVPN: disconnected" : "FortiVPN: no profiles"
 
   function refresh() { service.refresh() }
 
@@ -274,7 +278,7 @@ Panel {
 
               Text {
                 width: parent.width
-                text: "OpenFortiVPN"
+                text: "FortiVPN"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.title
@@ -371,7 +375,7 @@ Panel {
               Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: "openfortivpn is not installed"
+                text: "FortiVPN backend not installed"
                 textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
@@ -383,7 +387,7 @@ Panel {
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
                 text: service.depsInstallable
-                  ? "This widget drives the openfortivpn package and its systemd unit. Install it to get started."
+                  ? "FortiVPN tunnels are handled by the openfortivpn package and its systemd unit. Install it to get started."
                   : "This widget needs the openfortivpn package. Install it with your distribution's package manager."
                 textFormat: Text.PlainText
                 color: root.dim
@@ -604,7 +608,7 @@ Panel {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: "Import a .conf your admin gave you. It is installed to /etc/openfortivpn, readable only by root."
+                text: "Import the FortiVPN .conf your admin gave you. It is stored in /etc/openfortivpn, readable only by root."
                 textFormat: Text.PlainText
                 color: root.dim
                 font.family: root.fontFamily
