@@ -1,7 +1,7 @@
 import QtQuick
 import Quickshell.Io
 
-// State and process plumbing for the OpenFortiVPN widget. Everything the panel
+// State and process plumbing for the FortiVPN widget. Everything the panel
 // renders is derived here; the panel itself stays declarative.
 //
 // Reads are unprivileged (ofv-query). Writes go through systemd or pkexec and
