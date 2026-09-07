@@ -24,6 +24,18 @@ Item {
   property bool depsInstallable: true
   property string depsVersion: ""
   property string depsOutput: ""
+
+  // State of the privileged helpers: "yes", "stale" (the plugin was updated and
+  // ofv-setup has not been re-run) or "no". Until they are installed into their
+  // root-owned directory there is nothing safe to hand pkexec, so import,
+  // rename and delete are blocked and the panel points at ofv-setup instead.
+  // Optimistic default, for the same reason the others are.
+  property string helpersState: "yes"
+  property string setupCommand: ""
+  readonly property bool helpersReady: helpersState === "yes"
+
+  // Kept to the backend alone: connect, disconnect and the boot toggle go
+  // through systemd, not pkexec, so they still work with the helpers missing.
   readonly property bool depsOk: hasOpenfortivpn && hasUnit
   readonly property bool depsInstalling: depsInstallProcess.running
 
@@ -163,12 +175,16 @@ Item {
     for (var i = 0; i < lines.length; i++) {
       var at = lines[i].indexOf("=")
       if (at > 0) info[boundedField(lines[i].substring(0, at), 64)] =
-        boundedField(lines[i].substring(at + 1), 128)
+        boundedField(lines[i].substring(at + 1), 4096)
     }
     hasOpenfortivpn = info["openfortivpn"] === "yes"
     hasUnit = info["unit"] === "yes"
     depsInstallable = info["installable"] === "yes"
     depsVersion = info["version"] || ""
+    helpersState = info["helpers"] === "yes" ? "yes"
+      : info["helpers"] === "stale" ? "stale" : "no"
+    var setupPath = info["setup"] || ""
+    setupCommand = setupPath === "" ? "" : 'sudo "' + setupPath + '" install'
     depsChecked = true
   }
 

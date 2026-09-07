@@ -4,6 +4,10 @@
 
 set -uo pipefail
 
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+# shellcheck source=ofv-lib
+. "$here/ofv-lib" || exit 1
+
 old=${1:-}
 new=${2:-}
 
@@ -15,12 +19,8 @@ for n in "$old" "$new"; do
 done
 [[ $old != "$new" ]] || exit 0
 
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+# Resolved from the root-owned helper directory, never from this checkout; see
+# ofv-lib for why that distinction is the whole point.
+helper=$(ofv_root_helper ofv-rename-root) || exit 4
 
-timeout --signal=TERM --kill-after=5s 180s pkexec "$here/ofv-rename-root" "$old" "$new"
-status=$?
-if ((status == 126 || status == 127)); then
-  echo "Authorization was declined." >&2
-  exit 126
-fi
-exit "$status"
+ofv_pkexec 180 "$helper" "$old" "$new"

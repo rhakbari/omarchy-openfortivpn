@@ -1,9 +1,19 @@
 #!/bin/bash
 
-# Phase 2 of the import: hand the chosen file to the root installer through
+# Phase 2 of the import: hand the chosen profile to the root installer through
 # pkexec. Omarchy's polkit agent renders the prompt.
+#
+# What crosses the privilege boundary is the profile's *bytes*, captured here
+# before the prompt goes up, plus a digest of them -- never a pathname. See the
+# capture block below, and ofv-install-root for the other half.
 
 set -uo pipefail
+
+readonly max_bytes=1048576
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+# shellcheck source=ofv-lib
+. "$here/ofv-lib" || exit 1
 
 src=${1:-}
 name=${2:-}
@@ -12,19 +22,57 @@ if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || $name == "." || $name == ".." ]]; then
   echo "Invalid profile name." >&2
   exit 2
 fi
-if [[ ! -f $src || ! -r $src ]]; then
+if [[ -L $src || ! -f $src || ! -r $src ]]; then
   echo "That file cannot be read." >&2
   exit 2
 fi
 
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+helper=$(ofv_root_helper ofv-install-root) || exit 4
 
-# 180s covers the polkit prompt; pkexec exits 126/127 when the dialog is
-# dismissed or authorization is declined, which is a cancel, not a failure.
-timeout --signal=TERM --kill-after=5s 180s pkexec "$here/ofv-install-root" "$src" "$name"
-status=$?
-if ((status == 126 || status == 127)); then
-  echo "Authorization was declined." >&2
-  exit 126
+# Capture the profile now: with this user's own privileges, and before the
+# polkit prompt appears.
+#
+# The temporary file is unlinked the moment it is open, so fd 9 becomes the only
+# way to reach those bytes. Nothing else on the system -- not even another
+# process running as this same user -- can reach them by name and swap them
+# while the dialog is on screen. The file the user chose is read once, here,
+# under the privileges of the person who chose it; root is never handed a
+# pathname it would have to open again on the far side of the prompt.
+tmp=$(mktemp -- "${TMPDIR:-/tmp}/ofv-import.XXXXXX") || exit 1
+exec 9<>"$tmp" || {
+  rm -f -- "$tmp"
+  exit 1
+}
+rm -f -- "$tmp"
+
+# One byte past the ceiling, so an oversized file is rejected outright instead
+# of being silently truncated into a half-config.
+head -c "$((max_bytes + 1))" -- "$src" >&9 || {
+  echo "That file cannot be read." >&2
+  exit 2
+}
+
+size=$(wc -c </proc/self/fd/9) || exit 1
+if ((size == 0)); then
+  echo "That file is empty." >&2
+  exit 2
 fi
-exit "$status"
+if ((size > max_bytes)); then
+  echo "That file is too large to be an openfortivpn profile." >&2
+  exit 2
+fi
+
+# openfortivpn configs are key = value lines; `host` is the one required key.
+# The root half checks this again, against the copy it actually writes.
+if ! grep -qiE '^[[:space:]]*host[[:space:]]*=' </proc/self/fd/9; then
+  echo "That file is not an openfortivpn config." >&2
+  exit 3
+fi
+
+digest=$(sha256sum </proc/self/fd/9) || exit 1
+digest=${digest%% *}
+
+# Feed the captured bytes in on stdin, from a fresh read of the same unlinked
+# file, and close fd 9 so the privileged side inherits nothing writable.
+# 180s covers the polkit prompt.
+ofv_pkexec 180 "$helper" "$name" "$digest" </proc/self/fd/9 9<&-

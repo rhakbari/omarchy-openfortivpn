@@ -4,18 +4,18 @@
 
 set -uo pipefail
 
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+# shellcheck source=ofv-lib
+. "$here/ofv-lib" || exit 1
+
 name=${1:-}
 if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || $name == "." || $name == ".." ]]; then
   echo "Invalid profile name." >&2
   exit 2
 fi
 
-here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+# Resolved from the root-owned helper directory, never from this checkout; see
+# ofv-lib for why that distinction is the whole point.
+helper=$(ofv_root_helper ofv-remove-root) || exit 4
 
-timeout --signal=TERM --kill-after=5s 180s pkexec "$here/ofv-remove-root" "$name"
-status=$?
-if ((status == 126 || status == 127)); then
-  echo "Authorization was declined." >&2
-  exit 126
-fi
-exit "$status"
+ofv_pkexec 180 "$helper" "$name"

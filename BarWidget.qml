@@ -66,6 +66,12 @@ Panel {
 
   readonly property bool setupRequired: service.depsChecked && !service.depsOk
 
+  // The privileged helpers live in a root-owned directory that only
+  // `sudo ofv-setup install` can populate, so import, rename and delete are
+  // unavailable until that has been run. Connect and disconnect still work --
+  // those go through systemd, not pkexec.
+  readonly property bool helperSetupRequired: service.depsChecked && !service.helpersReady
+
   readonly property string barIcon: setupRequired ? iconFailed
     : connectedCount > 0 ? iconConnected
     : anyFailed ? iconFailed
@@ -87,7 +93,13 @@ Panel {
     : connectedCount > 0 ? "FortiVPN: " + activeName + " connected"
     : profiles.length > 0 ? "FortiVPN: disconnected" : "FortiVPN: no profiles"
 
-  function refresh() { service.refresh() }
+  // Re-checking the dependency state here (not just at startup) is what lets
+  // the setup card clear itself once `sudo ofv-setup install` has been run,
+  // without restarting the shell.
+  function refresh() {
+    service.checkDeps()
+    service.refresh()
+  }
 
   // Resolve bundled helpers relative to this file so the plugin works from any
   // plugin directory, including paths containing spaces.
@@ -239,7 +251,7 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refresh()
-        else if (t === "i" || t === "I") root.beginImport()
+        else if (t === "i" || t === "I") { if (!root.helperSetupRequired) root.beginImport() }
       }
 
       Flickable {
@@ -357,17 +369,23 @@ Panel {
 
           // ------------------------------------------------ setup required
           //
-          // Omarchy's plugin system has no install hook, so a freshly installed
-          // plugin checks for its own dependency and offers to install it here
-          // rather than failing cryptically at connect time.
+          // Two things can be missing, and they are missing for different
+          // reasons. The openfortivpn backend is a package the widget can
+          // install for itself. The privileged helpers are not: they have to be
+          // copied into a root-owned directory by `sudo ofv-setup install`,
+          // run by hand, because a button that installed code destined to run
+          // as root out of a directory the user can write is precisely the hole
+          // that arrangement exists to close. So when the helpers are absent
+          // this card stops offering to do it and shows the command instead.
           Rectangle {
-            visible: root.setupRequired
+            visible: root.setupRequired || root.helperSetupRequired
             width: parent.width
             implicitHeight: setupColumn.implicitHeight + Style.space(26)
             radius: Style.cornerRadius > 0 ? Style.space(6) : Style.space(3)
-            color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.06)
+            readonly property color tint: root.setupRequired ? root.urgent : root.accent
+            color: Qt.rgba(tint.r, tint.g, tint.b, 0.06)
             border.width: 1
-            border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.40)
+            border.color: Qt.rgba(tint.r, tint.g, tint.b, 0.40)
 
             Column {
               id: setupColumn
@@ -378,20 +396,65 @@ Panel {
               Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: "FortiVPN backend not installed"
+                text: service.helpersState === "stale" && !root.setupRequired
+                    ? "FortiVPN needs setup re-run"
+                  : root.helperSetupRequired ? "FortiVPN setup not finished"
+                  : "FortiVPN backend not installed"
                 textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.bold: true
               }
+
               Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: service.depsInstallable
-                  ? "FortiVPN tunnels are handled by the openfortivpn package and its systemd unit. Install it to get started."
-                  : "This widget needs the openfortivpn package. Install it with your distribution's package manager."
+                text: service.helpersState === "stale"
+                    ? "The plugin was updated, so the privileged helpers installed on this system no longer match it. Re-run setup in a terminal."
+                  : root.helperSetupRequired
+                    ? "Run this once in a terminal. It installs the widget's privileged helpers into a root-owned directory, and the openfortivpn backend that carries the tunnel."
+                  : service.depsInstallable
+                    ? "FortiVPN tunnels are handled by the openfortivpn package and its systemd unit. Install it to get started."
+                    : "This widget needs the openfortivpn package. Install it with your distribution's package manager."
+                textFormat: Text.PlainText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              // Selectable, so the command can be copied rather than retyped.
+              Rectangle {
+                visible: root.helperSetupRequired && service.setupCommand !== ""
+                width: parent.width
+                implicitHeight: setupCommandText.implicitHeight + Style.space(14)
+                radius: Style.cornerRadius > 0 ? Style.space(4) : 0
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+
+                TextEdit {
+                  id: setupCommandText
+                  anchors.centerIn: parent
+                  width: parent.width - Style.space(14)
+                  text: service.setupCommand
+                  readOnly: true
+                  selectByMouse: true
+                  wrapMode: TextEdit.Wrap
+                  textFormat: TextEdit.PlainText
+                  color: root.foreground
+                  selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                  selectedTextColor: root.foreground
+                  font.family: "monospace"
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              Text {
+                visible: root.helperSetupRequired && !root.setupRequired
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: "Connecting and disconnecting still work. Importing, renaming and deleting profiles do not."
                 textFormat: Text.PlainText
                 color: root.dim
                 font.family: root.fontFamily
@@ -399,7 +462,7 @@ Panel {
               }
 
               OfvActionButton {
-                visible: service.depsInstallable
+                visible: !root.helperSetupRequired && service.depsInstallable
                 width: parent.width
                 foreground: root.foreground
                 dim: root.dim
@@ -563,7 +626,7 @@ Panel {
                   foreground: root.foreground; dim: root.dim; fontFamily: root.fontFamily
                   accentColor: root.accent; urgentColor: root.urgent
                   label: root.iconEdit
-                  enabled: !service.anyWriteRunning
+                  enabled: !service.anyWriteRunning && !root.helperSetupRequired
                   onActivated: root.requestRename(profile)
                 }
 
@@ -573,7 +636,7 @@ Panel {
                   accentColor: root.accent; urgentColor: root.urgent
                   label: root.iconDelete
                   tone: "urgent"
-                  enabled: !service.anyWriteRunning
+                  enabled: !service.anyWriteRunning && !root.helperSetupRequired
                   onActivated: root.requestDelete(profile)
                 }
               }
@@ -629,8 +692,10 @@ Panel {
             iconText: root.iconImport
             label: service.pickRunning ? "Choose a file…"
               : service.installRunning ? "Installing…"
+              : root.helperSetupRequired ? "Import needs setup"
               : "Import profile"
             enabled: !service.pickRunning && !service.installRunning
+              && !root.helperSetupRequired
             onActivated: root.beginImport()
           }
         }

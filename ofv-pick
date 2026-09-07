@@ -12,6 +12,13 @@ path=$(omarchy file select --title "Import openfortivpn profile" --extensions "c
 # Empty means the picker was dismissed -- a cancel, not an error worth showing.
 [[ -n $path ]] || exit 1
 
+# Symlinks are refused rather than followed, here and again in ofv-install, so
+# the file the panel names is the file whose bytes get imported -- a link can be
+# repointed between choosing a profile and confirming its name.
+if [[ -L $path ]]; then
+  echo "That is a symbolic link. Import the file it points at instead." >&2
+  exit 2
+fi
 if [[ ! -f $path || ! -r $path ]]; then
   echo "That file cannot be read." >&2
   exit 2

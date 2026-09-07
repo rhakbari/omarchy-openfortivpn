@@ -9,8 +9,8 @@ import the `.conf` your admin sent you — without opening a terminal.
 Under the hood it drives [openfortivpn](https://github.com/adrienverge/openfortivpn),
 the open-source FortiGate SSL VPN client, through systemd. That is where the
 package name, config paths and unit names throughout this README come from — you
-do not have to touch any of them, and the widget installs openfortivpn for you
-on first run.
+do not have to touch any of them; a single setup command installs openfortivpn
+along with the widget's privileged helpers.
 
 > **Unofficial.** Not affiliated with, authorised by, or endorsed by Fortinet.
 > "FortiVPN", "FortiGate" and "FortiClient" are trademarks of Fortinet, Inc.
@@ -35,16 +35,34 @@ Plugin changes normally hot-reload. If the widget does not appear, run
 `omarchy restart shell`. Later, `omarchy plugin update rhakbari.openfortivpn`
 and `omarchy plugin remove rhakbari.openfortivpn` manage it.
 
-Nothing else to set up: Omarchy's plugin system has no install hook, so the
-widget checks for its `openfortivpn` backend itself on first run. If it is
-missing, the panel opens on a **Install openfortivpn** button that installs it
-(one polkit prompt) and then continues as normal.
+### Then run setup, once
+
+```bash
+cd ~/.config/omarchy/plugins/rhakbari.openfortivpn
+sudo ./ofv-setup install
+```
+
+That does two things: it copies the widget's four privileged helpers into
+`/usr/local/lib/omarchy-openfortivpn/` as `root:root`, and it installs the
+`openfortivpn` package if it is missing. Until it has been run, the panel shows
+the command and importing, renaming and deleting profiles stay unavailable —
+connecting and disconnecting work regardless, because those go through systemd
+rather than `pkexec`.
+
+**This step cannot be a button in the panel, and that is the point.** See
+[Privileges](#privileges) for why.
+
+Re-run the same command after `omarchy plugin update` — the panel says so when
+the installed helpers no longer match the plugin. `sudo ./ofv-setup status`
+reports the current state, and `sudo ./ofv-setup install --helpers-only` skips
+the package.
 
 ## Requirements
 
 - systemd and a running polkit agent (Omarchy's shell provides one)
-- `openfortivpn` — installed for you from the panel on first run, or by hand
+- `openfortivpn` — installed for you by `sudo ./ofv-setup install`, or by hand
   with `sudo pacman -S openfortivpn`
+- one run of `sudo ./ofv-setup install`, to place the privileged helpers
 
 ## How it works
 
@@ -80,7 +98,41 @@ openfortivpn needs root to create the tunnel interface. Nothing here is setuid.
 - **Connect / disconnect / boot toggle** run plain `systemctl`, so systemd asks
   polkit. Out of the box you get a graphical password prompt from Omarchy's own
   polkit agent.
-- **Import / delete** run through `pkexec`, which prompts the same way.
+- **Import / rename / delete / install the backend** run through `pkexec`, which
+  prompts the same way.
+
+### Why setup is a command you type, not a button
+
+`pkexec` resolves the program it was handed *after* the authorization dialog has
+been answered. So if the program named on that command line sits in a directory
+you can write — and a plugin checkout under `~/.config/omarchy/plugins/` is
+exactly that — then anything else running as you has a window as long as the
+prompt in which to replace the file. You would authorize "import a VPN profile"
+and `pkexec` would execute whatever landed there instead, as root.
+
+That is why the four `*-root` helpers do not run from the checkout. `ofv-setup`
+copies them to `/usr/local/lib/omarchy-openfortivpn/`, `root:root` and mode
+`0755`, and the wrappers refuse to hand `pkexec` anything that is not a
+root-owned regular file inside a directory chain that is root-owned all the way
+up from `/`. A directory only root can write has no window to race.
+
+The bootstrap cannot come from the panel for the same reason: a button that
+installed those helpers would itself have to run checkout code as root, which is
+the hole it exists to close. Typing `sudo ./ofv-setup install` makes installing
+privileged code a deliberate act you can inspect first, and it happens once.
+
+### How a profile crosses the boundary
+
+Importing never hands root a pathname. `ofv-install` reads the file you chose
+with your own privileges, before the prompt, into a temporary file it unlinks
+immediately — from then on a file descriptor is the only way to reach those
+bytes, so nothing running as you can swap them mid-prompt. It passes the bytes
+to `ofv-install-root` on stdin along with their SHA-256.
+
+The root half stages that stream once inside `/etc/openfortivpn`, then checks
+size, digest and `host =` against *that staged copy* — the same bytes it goes on
+to install, rather than a path it would have to open again and might find
+changed. A digest mismatch installs nothing. Both halves cap the read at 1 MiB.
 
 ### Optional: passwordless connect
 
@@ -189,6 +241,13 @@ reconnecting on every reboot:
 2. Turn off the **plug icon** on every profile, so nothing starts at boot.
 3. **Delete** any profiles you no longer want (the trash icon also stops and
    disables the unit for you).
+4. Take the privileged helpers back off the system, from the plugin folder:
+
+   ```bash
+   sudo ./ofv-setup uninstall
+   ```
+
+   That removes `/usr/local/lib/omarchy-openfortivpn/` and touches nothing else.
 
 Then remove the widget:
 
@@ -207,14 +266,17 @@ hand-copied folder is moved to a timestamped backup inside
 put on the system stays until you remove it yourself:
 
 ```bash
-# 1. Any profiles still in place (each holds a VPN password)
+# 1. The privileged helpers, if you skipped step 4 above
+sudo rm -rf /usr/local/lib/omarchy-openfortivpn
+
+# 2. Any profiles still in place (each holds a VPN password)
 sudo systemctl disable --now "openfortivpn@$(systemd-escape -- <name>)"
 sudo rm /etc/openfortivpn/<name>.conf
 
-# 2. The optional passwordless-connect polkit rule, if you installed it
+# 3. The optional passwordless-connect polkit rule, if you installed it
 sudo rm -f /etc/polkit-1/rules.d/49-openfortivpn.rules
 
-# 3. The backend package, if nothing else uses it
+# 4. The backend package, if nothing else uses it
 sudo pacman -Rns openfortivpn
 ```
 
@@ -230,7 +292,7 @@ package-owned files, so pacman will not touch them — and because the directory
 is not empty, `/etc/openfortivpn/` survives too. The `config` file that ships
 with the package is registered as a pacman backup file, so if you ever edited it
 you will be left with `/etc/openfortivpn/config.pacsave`. Remove profiles first
-(step 1 above) if you want the directory gone, then delete whatever remains:
+(step 2 above) if you want the directory gone, then delete whatever remains:
 
 ```bash
 sudo rm -rf /etc/openfortivpn
@@ -246,18 +308,24 @@ sudo rm -rf /etc/openfortivpn
 | `ofv-query` | Unprivileged status reads (profile list, tunnel details) |
 | `ofv-unit` | `systemctl start/stop/enable/disable` |
 | `ofv-pick` | File picker + config sanity check |
+| `ofv-lib` | Shared unprivileged code: helper resolution, trust checks |
+| `ofv-setup` | One-time `sudo` step that installs the `*-root` helpers |
 | `ofv-install` → `ofv-install-root` | Import, via `pkexec` |
 | `ofv-rename` → `ofv-rename-root` | Rename, via `pkexec` |
 | `ofv-remove` → `ofv-remove-root` | Delete, via `pkexec` |
 | `ofv-deps` → `ofv-deps-root` | Dependency check and install, via `pkexec` |
 
-`ofv-deps-root` hardcodes the package it installs. A pkexec helper that took a
-caller-supplied package name would let anyone who can run it install anything.
+The four `*-root` scripts run from `/usr/local/lib/omarchy-openfortivpn/`, not
+from the plugin folder; `ofv-setup` is what puts them there. They are the
+security boundary, so they are also self-contained — none of them sources
+`ofv-lib`, because a privileged script that read a library out of a
+user-writable checkout would be the same problem in a different shape.
 
-The `*-root` scripts are the security boundary: they re-validate every argument
-rather than trusting the caller, because `pkexec` hands them a caller-controlled
-argv. Profile names are restricted to `[A-Za-z0-9._-]` so they cannot escape
-`/etc/openfortivpn`.
+They re-validate every argument rather than trusting the caller, because
+`pkexec` hands them a caller-controlled argv. Profile names are restricted to
+`[A-Za-z0-9._-]` so they cannot escape `/etc/openfortivpn`, and `ofv-deps-root`
+hardcodes the package it installs — a pkexec helper that took a caller-supplied
+package name would let anyone who can run it install anything.
 
 ## Troubleshooting
 
@@ -278,7 +346,10 @@ by hand it is `systemctl reset-failed "openfortivpn@$(systemd-escape -- <name>).
 ## Hacking on it
 
 Saving a file under `~/.config/omarchy/plugins/` reloads the plugin, and that is
-enough for the shell scripts. **Editing the QML is different:** Quickshell caches
+enough for the unprivileged shell scripts. **Editing a `*-root` script is
+different:** the widget runs the copy under `/usr/local/lib/omarchy-openfortivpn/`,
+so re-run `sudo ./ofv-setup install` to push your change across. The panel
+notices the mismatch and tells you to. **Editing the QML is different again:** Quickshell caches
 compiled QML, and a hot reload can keep serving the old component — a newly
 added control simply will not appear. Run `omarchy restart shell` after QML
 changes.

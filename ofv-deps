@@ -1,11 +1,15 @@
 #!/bin/bash
 
-# Unprivileged wrapper: report dependency state, or install what is missing.
+# Unprivileged wrapper: report setup state, or install what is missing.
 #
 #   ofv-deps check    -> key=value lines describing what is present
 #   ofv-deps install  -> pkexec the root installer (polkit prompts)
 
 set -uo pipefail
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+# shellcheck source=ofv-lib
+. "$here/ofv-lib" || exit 1
 
 case "${1:-check}" in
   check)
@@ -29,18 +33,19 @@ case "${1:-check}" in
     else
       printf 'installable=no\n'
     fi
+
+    # yes / no / stale. Without the root-owned helpers there is nothing safe to
+    # hand pkexec, so the panel has to send the user to ofv-setup first.
+    printf 'helpers=%s\n' "$(ofv_helpers_state)"
+    printf 'setup=%s\n' "$OFV_PLUGIN_DIR/ofv-setup"
     ;;
 
   install)
-    here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+    # Resolved from the root-owned helper directory, never from this checkout;
+    # see ofv-lib for why that distinction is the whole point.
+    helper=$(ofv_root_helper ofv-deps-root) || exit 4
     # 300s: covers the polkit prompt plus a package download on a slow link.
-    timeout --signal=TERM --kill-after=5s 300s pkexec "$here/ofv-deps-root"
-    status=$?
-    if ((status == 126 || status == 127)); then
-      echo "Authorization was declined." >&2
-      exit 126
-    fi
-    exit "$status"
+    ofv_pkexec 300 "$helper"
     ;;
 
   *)

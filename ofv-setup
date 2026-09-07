@@ -1,0 +1,140 @@
+#!/bin/bash
+
+# One-time privileged setup: copy the *-root helpers into a root-owned
+# directory, and install the openfortivpn backend.
+#
+#   sudo ./ofv-setup install [--helpers-only]
+#   sudo ./ofv-setup uninstall
+#   ./ofv-setup status
+#
+# This is deliberately not something the widget can trigger for you.
+#
+# Everything the widget later runs as root has to already live somewhere only
+# root can write, and the step that first puts it there cannot be bootstrapped
+# from a user-writable checkout without recreating the exact problem it exists
+# to solve. pkexec resolves the program it was given after the authorization
+# dialog is answered, so a "click here to install the helpers" button would hand
+# pkexec a pathname inside the checkout and give anything running as this user a
+# prompt-long window to substitute its own code. Running this by hand makes
+# installing privileged code an explicit act, reviewable before it happens,
+# instead of a side effect of clicking a button in a panel.
+
+set -uo pipefail
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || exit 1
+# shellcheck source=ofv-lib
+. "$here/ofv-lib" || exit 1
+
+usage() {
+  cat >&2 <<EOF
+Usage: sudo "$here/ofv-setup" install [--helpers-only]
+       sudo "$here/ofv-setup" uninstall
+       "$here/ofv-setup" status
+EOF
+}
+
+require_root() {
+  if ((EUID != 0)); then
+    echo "This has to run as root: sudo \"$here/ofv-setup\" $1" >&2
+    exit 1
+  fi
+}
+
+do_install() {
+  local helpers_only=$1 h f base keep
+
+  require_root install
+
+  for h in "${OFV_ROOT_HELPERS[@]}"; do
+    [[ -f $here/$h ]] || {
+      echo "Missing $here/$h -- is this a complete checkout?" >&2
+      exit 1
+    }
+  done
+
+  install -d -o root -g root -m 0755 -- "$OFV_HELPER_DIR" || exit 1
+  for h in "${OFV_ROOT_HELPERS[@]}"; do
+    install -o root -g root -m 0755 -T -- "$here/$h" "$OFV_HELPER_DIR/$h" || exit 1
+    echo "Installed $OFV_HELPER_DIR/$h"
+  done
+
+  # A helper dropped from a later version is still a root-owned pkexec entry
+  # point sitting on disk. Leaving it there would keep an unreferenced,
+  # unreviewed privileged script installed forever.
+  for f in "$OFV_HELPER_DIR"/*; do
+    [[ -e $f ]] || continue
+    base=${f##*/}
+    keep=no
+    for h in "${OFV_ROOT_HELPERS[@]}"; do
+      [[ $base == "$h" ]] && keep=yes
+    done
+    [[ $keep == yes ]] || {
+      rm -f -- "$f" && echo "Removed stale $f"
+    }
+  done
+
+  if [[ $helpers_only == yes ]]; then
+    echo "Helpers installed. Skipped the backend (--helpers-only)."
+    return 0
+  fi
+
+  if command -v openfortivpn >/dev/null 2>&1; then
+    echo "openfortivpn is already installed."
+    return 0
+  fi
+
+  # Run the copy that was just installed, not the one in the checkout.
+  "$OFV_HELPER_DIR/ofv-deps-root"
+}
+
+do_uninstall() {
+  local h
+
+  require_root uninstall
+
+  if [[ ! -e $OFV_HELPER_DIR ]]; then
+    echo "Nothing to remove: $OFV_HELPER_DIR does not exist."
+    return 0
+  fi
+  ofv_trusted_dir "$OFV_HELPER_DIR" || {
+    echo "$OFV_HELPER_DIR is not owned by root only. Remove it by hand." >&2
+    exit 1
+  }
+
+  for h in "${OFV_ROOT_HELPERS[@]}"; do
+    rm -f -- "$OFV_HELPER_DIR/$h"
+  done
+  # Named removals then rmdir, rather than a recursive delete of a path that
+  # could have been pointed somewhere else.
+  if rmdir -- "$OFV_HELPER_DIR" 2>/dev/null; then
+    echo "Removed $OFV_HELPER_DIR"
+  else
+    echo "Removed the helpers; $OFV_HELPER_DIR is not empty and was left in place." >&2
+  fi
+
+  echo "Profiles in /etc/openfortivpn and the openfortivpn package are untouched."
+}
+
+do_status() {
+  printf 'helpers=%s\n' "$(ofv_helpers_state)"
+  printf 'directory=%s\n' "$OFV_HELPER_DIR"
+  printf 'plugin=%s\n' "$OFV_PLUGIN_DIR"
+  if command -v openfortivpn >/dev/null 2>&1; then
+    printf 'openfortivpn=yes\n'
+  else
+    printf 'openfortivpn=no\n'
+  fi
+}
+
+case "${1:-}" in
+  install)
+    case "${2:-}" in
+      "") do_install no ;;
+      --helpers-only) do_install yes ;;
+      *) usage; exit 2 ;;
+    esac
+    ;;
+  uninstall) do_uninstall ;;
+  status) do_status ;;
+  *) usage; exit 2 ;;
+esac

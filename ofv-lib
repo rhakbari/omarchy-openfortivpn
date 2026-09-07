@@ -1,0 +1,133 @@
+#!/bin/bash
+# shellcheck shell=bash
+#
+# Shared, unprivileged code, sourced by the wrapper scripts and by ofv-setup.
+#
+# The *-root scripts deliberately do NOT source this. They are the only code
+# that ever runs with privilege, so everything they need lives in the single
+# file ofv-setup copies into the root-owned directory -- a root script that
+# sourced a library out of the plugin checkout would just be the same
+# user-writable-code-as-root problem wearing a different hat.
+
+# Where the privileged half of the plugin lives once `sudo ofv-setup install`
+# has put it there.
+#
+# This exists because pkexec resolves the program it was handed *after* the
+# authorization dialog is answered. A helper sitting in the plugin checkout is
+# writable by the user, and so by anything running as the user, which leaves a
+# window as long as the prompt in which the file being authorized can be swapped
+# for other code -- and pkexec would then execute that replacement as root. A
+# directory only root can write has no such window.
+readonly OFV_HELPER_DIR=/usr/local/lib/omarchy-openfortivpn
+
+# Every one of these is a pkexec entry point, and every one of them is installed
+# by ofv-setup. Keep the list and the directory contents in step: anything else
+# found there is stale and gets removed on install.
+readonly OFV_ROOT_HELPERS=(
+  ofv-install-root
+  ofv-rename-root
+  ofv-remove-root
+  ofv-deps-root
+)
+
+# The checkout this file was sourced from, so messages can name the exact
+# ofv-setup to run rather than a path the reader has to work out.
+OFV_PLUGIN_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || return 1
+readonly OFV_PLUGIN_DIR
+readonly OFV_SETUP_CMD="sudo \"$OFV_PLUGIN_DIR/ofv-setup\" install"
+
+# Is $1 a root-owned $2 (file|dir) that only root can write?
+#
+# Symlinks are rejected outright rather than followed, so the thing being
+# checked is always the thing that will be executed.
+ofv_root_owned() {
+  local path=$1 kind=$2 meta uid mode
+  [[ -L $path ]] && return 1
+  case $kind in
+    file) [[ -f $path ]] || return 1 ;;
+    dir) [[ -d $path ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  meta=$(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+  read -r uid mode <<<"$meta"
+  [[ $uid == 0 ]] || return 1
+  (((8#$mode & 0022) == 0))
+}
+
+# A root-owned directory reached through a directory somebody else can write is
+# not protected at all -- the whole subtree can be moved aside and replaced. So
+# check every component from / down.
+ofv_trusted_dir() {
+  local path=$1 acc="" part
+  local -a parts
+  ofv_root_owned / dir || return 1
+  IFS=/ read -r -a parts <<<"${path#/}"
+  for part in "${parts[@]}"; do
+    acc="$acc/$part"
+    ofv_root_owned "$acc" dir || return 1
+  done
+}
+
+# Print the absolute path of a privileged helper, or explain what to run.
+# Callers must use this rather than building a path next to themselves.
+ofv_root_helper() {
+  local name=$1 path
+  path="$OFV_HELPER_DIR/$name"
+
+  if ! ofv_trusted_dir "$OFV_HELPER_DIR"; then
+    if [[ -e $OFV_HELPER_DIR ]]; then
+      echo "$OFV_HELPER_DIR is not owned by root only. Refusing to run anything from it." >&2
+    else
+      echo "FortiVPN setup has not been run yet. In a terminal: $OFV_SETUP_CMD" >&2
+    fi
+    return 1
+  fi
+
+  if ! ofv_root_owned "$path" file || [[ ! -x $path ]]; then
+    echo "$name is missing from $OFV_HELPER_DIR. Re-run: $OFV_SETUP_CMD" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$path"
+}
+
+ofv_digest() {
+  local sum
+  sum=$(sha256sum -- "$1" 2>/dev/null) || return 1
+  printf '%s\n' "${sum%% *}"
+}
+
+# yes  -- installed, root-owned, and matching this checkout
+# stale -- installed but a different version, so `omarchy plugin update` ran
+#          and setup has not been re-run
+# no   -- not installed, or not trustworthy
+ofv_helpers_state() {
+  local h a b
+  ofv_trusted_dir "$OFV_HELPER_DIR" || { echo no; return; }
+  for h in "${OFV_ROOT_HELPERS[@]}"; do
+    ofv_root_owned "$OFV_HELPER_DIR/$h" file || { echo no; return; }
+    [[ -x $OFV_HELPER_DIR/$h ]] || { echo no; return; }
+  done
+  for h in "${OFV_ROOT_HELPERS[@]}"; do
+    a=$(ofv_digest "$OFV_PLUGIN_DIR/$h") || { echo stale; return; }
+    b=$(ofv_digest "$OFV_HELPER_DIR/$h") || { echo stale; return; }
+    [[ $a == "$b" ]] || { echo stale; return; }
+  done
+  echo yes
+}
+
+# Run a privileged helper under pkexec with a deadline.
+#
+# pkexec exits 126/127 when the dialog is dismissed or authorization is
+# declined, which is a cancel rather than a failure worth showing as an error.
+ofv_pkexec() {
+  local seconds=$1
+  shift
+  timeout --signal=TERM --kill-after=5s "${seconds}s" pkexec "$@"
+  local status=$?
+  if ((status == 126 || status == 127)); then
+    echo "Authorization was declined." >&2
+    return 126
+  fi
+  return "$status"
+}

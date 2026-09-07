@@ -3,14 +3,23 @@
 # Root half of the import, reached only through pkexec. This script is the
 # security boundary: every argument is re-validated here rather than trusted
 # from the caller, because pkexec hands it a caller-controlled argv.
+#
+# It takes no pathname, by design. The profile arrives on stdin -- already
+# captured by the unprivileged half before the authorization prompt -- and the
+# digest of those captured bytes arrives as an argument. A root process that
+# opens a caller-supplied path can be pointed at a symlink, or handed a
+# different file between one open and the next, so the checks it makes need not
+# describe the bytes it ends up copying. Here the bytes are staged exactly once,
+# inside a directory only root can write, and every check runs against that one
+# staged copy.
 
 set -uo pipefail
 
 readonly conf_dir=/etc/openfortivpn
 readonly max_bytes=1048576
 
-src=${1:-}
-name=${2:-}
+name=${1:-}
+digest=${2:-}
 
 # Re-validate rather than trusting the unprivileged caller. Rejecting slashes,
 # "." and ".." is what keeps $dest inside $conf_dir.
@@ -18,39 +27,54 @@ if [[ ! $name =~ ^[A-Za-z0-9._-]+$ || $name == "." || $name == ".." ]]; then
   echo "Invalid profile name." >&2
   exit 2
 fi
-
-if [[ ! -f $src || ! -r $src ]]; then
-  echo "Source file is not readable." >&2
+if [[ ! $digest =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Invalid payload digest." >&2
   exit 2
 fi
 
-size=$(stat -c %s -- "$src" 2>/dev/null || echo 0)
+mkdir -p -- "$conf_dir" || exit 1
+chmod 0755 -- "$conf_dir" 2>/dev/null
+
+# Stage next to the destination and rename, so a reader never sees a partial
+# config and the file is never briefly world-readable. $conf_dir is root-owned,
+# so the staged copy is out of reach of the caller from the moment it exists.
+tmp=$(mktemp -- "$conf_dir/.import.XXXXXX") || exit 1
+trap 'rm -f -- "$tmp"' EXIT
+chmod 0600 -- "$tmp"
+
+# One byte past the ceiling, so an oversized payload is caught rather than
+# truncated. This is the only read of stdin: everything below inspects $tmp.
+head -c "$((max_bytes + 1))" >"$tmp" || exit 1
+
+size=$(stat -c %s -- "$tmp") || exit 1
+if ((size == 0)); then
+  echo "No profile data was received." >&2
+  exit 2
+fi
 if ((size > max_bytes)); then
   echo "Source file is too large." >&2
   exit 2
 fi
 
-if ! grep -qiE '^[[:space:]]*host[[:space:]]*=' -- "$src"; then
+# The bytes that were authorized are the bytes that get installed, or nothing is.
+got=$(sha256sum -- "$tmp") || exit 1
+if [[ ${got%% *} != "$digest" ]]; then
+  echo "The profile changed while authorization was pending. Nothing was installed." >&2
+  exit 4
+fi
+
+if ! grep -qiE '^[[:space:]]*host[[:space:]]*=' -- "$tmp"; then
   echo "Source file is not an openfortivpn config." >&2
   exit 3
 fi
 
 dest="$conf_dir/${name}.conf"
-mkdir -p -- "$conf_dir" || exit 1
-chmod 0755 -- "$conf_dir" 2>/dev/null
 
-# Stage next to the destination and rename, so a reader never sees a partial
-# config and the file is never briefly world-readable. install(1) sets the
-# final owner and mode in one step.
-tmp=$(mktemp -- "$conf_dir/.import.XXXXXX") || exit 1
-trap 'rm -f -- "$tmp"' EXIT
-chmod 0600 -- "$tmp"
-
-cat -- "$src" >"$tmp" || exit 1
+# Credentials live in this file, so it stays root-only. Set owner and mode on
+# the staged copy, before it is visible under its final name.
 chown root:root -- "$tmp" || exit 1
+chmod 0600 -- "$tmp" || exit 1
 mv -f -- "$tmp" "$dest" || exit 1
 trap - EXIT
 
-# Credentials live in this file, so it stays root-only.
-chmod 0600 -- "$dest"
 echo "Installed $dest"
