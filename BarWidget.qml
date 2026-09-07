@@ -38,7 +38,10 @@ Panel {
   property string renameOldName: ""
   property string renameName: ""
 
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
+  // barForeground (inherited from the Panel base) tracks the bar's
+  // transparent-background mode and its color-swap animation, same as every
+  // default plugin's icon; bar.foreground does neither, which was the bug.
+  readonly property color foreground: barForeground
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property color accent: Color.accent
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -196,7 +199,7 @@ Panel {
             text: root.barIcon
             color: root.connectedCount > 0 ? root.accent
               : root.anyFailed ? root.urgent
-              : (root.bar ? root.bar.foreground : Color.foreground)
+              : root.foreground
             opacity: root.connectedCount > 0 || root.anyFailed ? 1 : 0.55
             font.family: root.fontFamily
             font.pixelSize: Style.bar.iconFont
